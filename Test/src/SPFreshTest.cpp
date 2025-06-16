@@ -218,9 +218,9 @@ namespace SPFreshTest {
                     ByteArray p_meta = metaset->GetMetadata((SizeType)index);
                     std::uint64_t* offsets = new std::uint64_t[2]{ 0,  p_meta.Length()};
                     std::shared_ptr<SPTAG::MetadataSet> meta(new SPTAG::MemMetadataSet(p_meta, ByteArray((std::uint8_t*)offsets, 2 * sizeof(std::uint64_t), true), 1));
-                    p_index->AddIndex(addset->GetVector((SizeType)index), 1, p_opts.m_dim, meta, true);
+                    auto status = p_index->AddIndex(addset->GetVector((SizeType)index), 1, p_opts.m_dim, meta, true);
+                    BOOST_REQUIRE(status == ErrorCode::Success);
                     auto insertEnd = std::chrono::high_resolution_clock::now();
-                    //latency_vector[index] = std::chrono::duration_cast<std::chrono::microseconds>(insertEnd - insertBegin).count();
                 }
                 else
                 {
@@ -237,7 +237,6 @@ namespace SPFreshTest {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     }
-
 }
 
 bool CompareFilesWithLogging(const std::filesystem::path& file1, const std::filesystem::path& file2) {
@@ -533,7 +532,7 @@ BOOST_AUTO_TEST_CASE(IndexPersistenceAndInsertSanity)
     // Insert new vectors
     InsertVectors<int8_t>(
         static_cast<SPTAG::SPANN::Index<int8_t>*>(loadedClone.get()),
-        2,
+        1,
         static_cast<int>(addvecset->Count()),
         addvecset,
         addmetaset
@@ -551,6 +550,63 @@ BOOST_AUTO_TEST_CASE(IndexPersistenceAndInsertSanity)
     std::filesystem::remove_all("insert_test_index");
     std::filesystem::remove_all("insert_cloned_index");
     std::filesystem::remove_all("insert_final_index");
+}
+
+BOOST_AUTO_TEST_CASE(IndexPersistenceAndInsertMultipleThreads)
+{
+    using namespace SPFreshTest;
+
+    // Prepare test data
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<MetadataSet> metaset, addmetaset;
+
+    TestUtils::TestDataGenerator<int8_t> generator(N, 10, M, K, "L2");
+    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+
+    // Build and save base index
+    auto baseIndex = BuildIndex<int8_t>("insert_test_index_multi", vecset, metaset);
+    BOOST_REQUIRE(baseIndex != nullptr);
+    BOOST_REQUIRE(baseIndex->SaveIndex("insert_test_index_multi") == ErrorCode::Success);
+
+    // Load the saved index
+    std::shared_ptr<VectorIndex> loadedOnce;
+    BOOST_REQUIRE(VectorIndex::LoadIndex("insert_test_index_multi", loadedOnce) == ErrorCode::Success);
+    BOOST_REQUIRE(loadedOnce != nullptr);
+
+    // Search sanity check
+    SearchOnly<int8_t>(loadedOnce, queryset, K);
+
+    // Clone the loaded index
+    auto clonedIndex = VectorIndex::Clone("insert_test_index_multi", "insert_cloned_index_multi");
+    BOOST_REQUIRE(clonedIndex != nullptr);
+
+    // Save and reload the cloned index
+    BOOST_REQUIRE(clonedIndex->SaveIndex("insert_cloned_index_multi") == ErrorCode::Success);
+    std::shared_ptr<VectorIndex> loadedClone;
+    BOOST_REQUIRE(VectorIndex::LoadIndex("insert_cloned_index_multi", loadedClone) == ErrorCode::Success);
+    BOOST_REQUIRE(loadedClone != nullptr);
+
+    // Insert new vectors
+    InsertVectors<int8_t>(
+        static_cast<SPTAG::SPANN::Index<int8_t>*>(loadedClone.get()),
+        2,
+        static_cast<int>(addvecset->Count()),
+        addvecset,
+        addmetaset
+    );
+
+    // Final save and reload after insert
+    BOOST_REQUIRE(loadedClone->SaveIndex("insert_final_index_multi") == ErrorCode::Success);
+    std::shared_ptr<VectorIndex> reloadedFinal;
+    BOOST_REQUIRE(VectorIndex::LoadIndex("insert_final_index_multi", reloadedFinal) == ErrorCode::Success);
+
+    // Final search sanity
+    SearchOnly<int8_t>(reloadedFinal, queryset, K);
+
+    // Cleanup
+    std::filesystem::remove_all("insert_test_index_multi");
+    std::filesystem::remove_all("insert_cloned_index_multi");
+    std::filesystem::remove_all("insert_final_index_multi");
 }
 
 BOOST_AUTO_TEST_CASE(IndexSaveDuringQuery)
@@ -742,17 +798,18 @@ BOOST_AUTO_TEST_CASE(IndexShadowCloneLifecycleKeepLast)
         BOOST_REQUIRE(shadowLoaded->SaveIndex(shadowIndexName) == ErrorCode::Success);
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[%d] Created new shadow index: %s\n", iter, shadowIndexName.c_str());
 
-        // Optionally delete older shadows
-        if (iter > 1) {
-            std::string old = "shadow_index_" + std::to_string(iter - 2);
-            std::filesystem::remove_all(old);
-        }
-
         previousIndexName = shadowIndexName;
     }
 
     // Keep the final shadow index directory for debugging/inspection
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Kept final index: %s\n", previousIndexName.c_str());
+
+    // Cleanup all created indexes after test
+    std::filesystem::remove_all(baseIndexName);
+    for (int iter = 0; iter < iterations; ++iter) {
+        std::string shadow = "shadow_index_" + std::to_string(iter);
+        std::filesystem::remove_all(shadow);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
