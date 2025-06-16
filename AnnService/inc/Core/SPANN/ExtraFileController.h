@@ -28,7 +28,7 @@ namespace SPTAG::SPANN {
             static constexpr AddressType kFileIoStartBlocks = (3ULL << 30) >> PageSizeEx; // 3GB start pool
             static constexpr AddressType kFileIoGrowthBlocks = (1ULL << 30) >> PageSizeEx; // 1GB growth pool
             static constexpr float fFileIoThreshold = 0.05f;
-            static constexpr AddressType kFileIODefaultMaxBlocks = (300ULL << 30) >> PageSizeEx; // 300 GB            
+            static constexpr AddressType kFileIODefaultMaxBlocks = (3000ULL << 30) >> PageSizeEx; // 300 GB            
             
             static constexpr const char* kFileIoDepth = "SPFRESH_FILE_IO_DEPTH";
             static constexpr int kSsdFileIoDefaultIoDepth = 1024;
@@ -196,20 +196,22 @@ namespace SPTAG::SPANN {
                         return ErrorCode::Fail;
                     }
 
-                    int blocks = 0;
+                    AddressType blocks = 0;
                     AddressType totalAllocated = 0;
 
                     // Read block count
-                    IOBINARY(ptr, ReadBinary, sizeof(SizeType), reinterpret_cast<char*>(&blocks));
+                    IOBINARY(ptr, ReadBinary, sizeof(AddressType), reinterpret_cast<char*>(&blocks));
                     // Read total allocated block count
                     IOBINARY(ptr, ReadBinary, sizeof(AddressType), reinterpret_cast<char*>(&totalAllocated));
 
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                        "BlockController::LoadBlockPool: reading %d blocks into pool (%.2f GB)\n",
-                        blocks, (blocks << PageSizeEx) / double(1 << 30));
+                        "BlockController::LoadBlockPool: reading %llu blocks into pool (%.2f GB), total allocated: %llu blocks\n",
+                        static_cast<unsigned long long>(blocks),
+                        (blocks << PageSizeEx) / static_cast<double>(1ULL << 30),
+                        static_cast<unsigned long long>(totalAllocated));
 
                     AddressType currBlockAddress = 0;
-                    for (int i = 0; i < blocks; ++i) {
+                    for (AddressType i = 0; i < blocks; ++i) {
                         IOBINARY(ptr, ReadBinary, sizeof(AddressType), reinterpret_cast<char*>(&currBlockAddress));
                         m_blockAddresses.push(currBlockAddress);
                     }
@@ -217,10 +219,9 @@ namespace SPTAG::SPANN {
                     m_totalAllocatedBlocks.store(totalAllocated);
 
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                        "BlockController::LoadBlockPool: loaded block pool with %d blocks. Total allocated = %llu (%.2f GB)\n",
-                        blocks,
-                        static_cast<unsigned long long>(totalAllocated),
-                        (totalAllocated << PageSizeEx) / double(1 << 30));
+                        "BlockController::LoadBlockPool: block pool initialized. Available: %llu, Total allocated: %llu\n",
+                        static_cast<unsigned long long>(blocks),
+                        static_cast<unsigned long long>(totalAllocated));
                 }
                 return ErrorCode::Success;
             }
@@ -968,9 +969,16 @@ namespace SPTAG::SPANN {
 
             auto newSize = *postingSize + value.size();
             int newblocks = ((newSize + PageSize - 1) >> PageSizeEx);
+
             if (newblocks >= m_blockLimit) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failt to merge key:%d value:%lld since value too long!\n", key, newSize);
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Origin Size: %lld, merge size: %lld\n", *postingSize, value.size());
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "[Merge] Key %d failed: new size %lld bytes requires %d blocks (limit: %d)\n",
+                    key, static_cast<long long>(newSize), newblocks, m_blockLimit);
+
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "[Merge] Original size: %lld bytes, Merge size: %lld bytes\n",
+                    static_cast<long long>(*postingSize), static_cast<long long>(value.size()));
+
                 if (m_fileIoUseLock) {
                     m_rwMutex[hash(key)].unlock();
                 }

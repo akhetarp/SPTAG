@@ -326,7 +326,6 @@ bool CompareDirectoriesWithLogging(const std::filesystem::path& dir1,
     return matched;
 }
 
-
 BOOST_AUTO_TEST_SUITE(SPFreshTest)
 
 BOOST_AUTO_TEST_CASE(TestLoadAndSave)
